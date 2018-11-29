@@ -12,6 +12,7 @@ tool (https://github.com/tbmihailov/overleaf-backup-tool).
 
 import getpass
 import json
+import pickle
 import re
 import time
 
@@ -19,12 +20,32 @@ from bs4 import BeautifulSoup
 import requests
 
 class OverleafClient(object):
-    def __init__(self):
+    def __init__(self, cookies_file=None):
+        ''' Init Overleaf client
+
+        Parameters
+        ==========
+        cookies_file : str or None (default: None)
+            File where to store login cookies
+        '''
         self.url_signin = 'https://www.overleaf.com/login'
-        self.login_cookies = None
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:63.0) Gecko/20100101 Firefox/63.0',
             }
+        self.cookies_file = cookies_file
+        try:
+            self._load_cookies()
+        except (FileNotFoundError, EOFError, TypeError):
+            self.cookies = requests.cookies.RequestsCookieJar()
+
+    def _load_cookies(self):
+        with open(self.cookies_file, 'rb') as f:
+            self.cookies = pickle.load(f)
+        self.cookies.clear_expired_cookies()
+
+    def _dump_cookies(self):
+        with open(self.cookies_file, 'wb') as f:
+            pickle.dump(self.cookies, f)
 
     def login_with_user_and_pass(self, email, password):
         ''' Try to login to and sets the login cookie if successful.
@@ -86,7 +107,13 @@ class OverleafClient(object):
         except json.JSONDecodeError:
             # this happens when the login is successful
             pass
-        self.login_cookies = r_signing_post.cookies
+        self.cookies = r_signing_post.cookies
+
+    def interactive_login(self):
+        if 'overleaf_session' not in self.cookies:
+            self.login_with_user_and_pass(input('Email: '), getpass.getpass())
+            if self.cookies_file:
+                self._dump_cookies()
 
     def download_zip(self, project, output=None):
         if project.startswith('http'):
@@ -100,8 +127,8 @@ class OverleafClient(object):
             output = 'overleaf_{}_{}.zip'.format(project_id, int(time.time()))
 
         r = requests.get(
-            url, 
-            headers=self.headers, cookies=self.login_cookies,
+            url,
+            headers=self.headers, cookies=self.cookies,
             stream=True)
         if r.status_code == 200:
             with open(output, 'wb') as f:
@@ -109,7 +136,7 @@ class OverleafClient(object):
                     f.write(chunk)
 
 if __name__ == '__main__':
-    
+
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -124,12 +151,17 @@ if __name__ == '__main__':
         type=str,
         default=None,
         help='output zip file (only for a single project)')
+    parser.add_argument(
+        '--cookies',
+        type=str,
+        default=None,
+        help='Path to cookies file, if any')
     args = parser.parse_args()
 
     if len(args.project) > 1 and args.output is not None:
         raise ValueError('Cannot specify output for multiple projects')
 
-    c = OverleafClient()
-    c.login_with_user_and_pass(input('Email: '), getpass.getpass())
+    c = OverleafClient(cookies_file=args.cookies)
+    c.interactive_login()
     for project in args.project:
         c.download_zip(project, output=args.output)
